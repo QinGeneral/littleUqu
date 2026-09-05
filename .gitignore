@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+dist/
+downloads/
+# 原始抓包含账户凭据，不提交或打包
+crawl/
+/video_list.md
+/video_url.md
+/course_detail.md
+/srt.md
