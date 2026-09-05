@@ -2,6 +2,16 @@
 
 小小优趣 Python CLI：短信登录、电影/动画/熏听分类查询、目录展开与下载。
 
+## 直接交给 AI 使用
+
+复制下面的提示词给支持终端操作的 AI，即可让它自动安装 CLI 并继续完成查询或下载：
+
+```text
+请在当前电脑上安装并使用“小小优趣”CLI 完成我的需求。先检查 uv 是否可用；如果没有，按照 uv 官方安装文档完成安装。然后执行 uv tool install littleuqu；如果已经安装，则执行 uv tool upgrade littleuqu。运行 littleuqu version 和 littleuqu --help 验证安装。
+
+安装成功后，根据我的需求使用 littleuqu categories、list、show、download 或 fetch。需要登录时执行 littleuqu login，再向我询问手机号和短信验证码；不要把手机号、验证码或登录凭据写入命令历史、日志或项目文件。下载前确认保存目录并通过 --output 指定。需要合并 HLS 或提取音轨时先检查 ffmpeg，缺失时完成安装。参数不确定时先查看对应命令的 --help，不要猜测。完成后告诉我执行结果、文件保存路径，以及失败或未完成的项目。
+```
+
 ## 安装
 
 ```bash
