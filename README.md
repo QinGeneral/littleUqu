@@ -5,12 +5,14 @@
 ## 安装
 
 ```bash
-uv tool install .
+uv tool install littleuqu
 littleuqu --help
 ```
 
+升级到最新版：`uv tool upgrade littleuqu`。
+
 HLS 合并与音轨提取需要 `ffmpeg`（macOS：`brew install ffmpeg`）。
-开发运行：`uv sync --group dev`，随后 `uv run littleuqu --help`。
+从源码开发：`uv sync --group dev`，随后 `uv run littleuqu --help`。
 
 ## 登录
 
