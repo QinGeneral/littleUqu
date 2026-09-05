@@ -15,7 +15,7 @@ from .catalog import KINDS, Catalog, item_id, kind_name, playback_urls, title
 from .config import UquError, config_dir, safe_name, scrub, write_json
 from .download import MediaError, completed, direct, extract_audio, media, require_ffmpeg
 
-app = typer.Typer(help="小优趣：登录、分类查询与媒体下载", no_args_is_help=True)
+app = typer.Typer(help="小小优趣：登录、分类查询与媒体下载", no_args_is_help=True)
 auth = typer.Typer(help="管理登录会话", no_args_is_help=True)
 app.add_typer(auth, name="auth")
 console = Console(stderr=True)

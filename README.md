@@ -1,6 +1,6 @@
 # littleuqu
 
-小优趣 Python CLI：短信登录、电影/动画/熏听分类查询、目录展开与下载。
+小小优趣 Python CLI：短信登录、电影/动画/熏听分类查询、目录展开与下载。
 
 ## 安装
 
@@ -18,20 +18,17 @@ HLS 合并与音轨提取需要 `ffmpeg`（macOS：`brew install ffmpeg`）。
 
 ```bash
 littleuqu login
-# 或导入本机已有抓包中的 token 与设备上下文
-littleuqu auth import-capture crawl/动画/list.md
 littleuqu auth status
 littleuqu auth logout
 ```
 
 `login` 输入手机号后会发送短信。已有验证码可用 `login --mobile PHONE --code CODE`，
 但交互输入更适合避免 shell 历史保存验证码。会话保存在 platformdirs 用户配置目录，权限 0600。
-可用 `LITTLEUQU_CONFIG_DIR` 指定目录。原始抓包不会进入发行包；请不要提交包含凭据的抓包。
+可用 `LITTLEUQU_CONFIG_DIR` 指定目录。
 客户端优先使用 Python 运行时的系统 CA bundle，兼容安装了本机代理证书的环境；也可用
 `LITTLEUQU_CA_BUNDLE=/path/to/ca.pem` 显式指定，TLS 校验不会被关闭。
-登录返回 refreshToken，但刷新接口尚缺抓包，目前过期后需要重新登录。
-新设备的必要请求头仍需真实联调；可通过导入抓包复用设备上下文。
-儿童档案查询接口尚缺抓包，可 `auth set-child ID --age-days N` 设置。
+登录返回 refreshToken，但刷新接口尚未实现，目前过期后需要重新登录。
+儿童档案查询接口尚未实现，可 `auth set-child ID --age-days N` 设置。
 
 ## 查询
 
@@ -49,7 +46,7 @@ littleuqu show 熏听 382
 
 类别别名：`movie` / `animation` / `audio`。筛选项来自接口，支持名称和数字值，0 表示全部。
 `list` 默认第 1 页、每页 16 条，`--all-pages` 遍历全部页。按类别和资源类型/ID 去重。
-抓包仅提供第一页，当前将 `page.offset` 按页码递增，检测重复页时会报错而非静默截断。
+当前将 `page.offset` 按页码递增，检测重复页时会报错而非静默截断。
 
 ## 下载
 
@@ -98,15 +95,12 @@ HLS 支持普通点播 TS、主列表选择、AES-128 正确 IV/密钥、分片�
 | 电影 | 已实现 | 已实现（`film/detail/v2`） | 已实现 HLS、SRT、中英文 PDF、封面 |
 | 熏听 | 已实现 | 已实现（`listen/content/list`、`songList`） | 已实现 MP4/M3U8 获取、M4A 提取、原始 MP3、SRT/LRC、封面 |
 
-熏听当前覆盖抓包中出现的 `LISTEN_AD`、`LISTEN_VD` 和 `LISTEN_FILM`。遇到其他 `rssType` 会明确报错，
-需要补充该类型的内容列表和播放抓包。`download --all` 会遍历三类。
+熏听当前覆盖 `LISTEN_AD`、`LISTEN_VD` 和 `LISTEN_FILM`。遇到其他 `rssType` 会明确报错。
+`download --all` 会遍历三类。
 `fetch` 可下载手头已有的音视频/附件直链。
 
 待补充：熏听除 `LISTEN_AD`/`LISTEN_VD`/`LISTEN_FILM` 外的资源类型、动画和熏听的 PDF 地址、
 动画整季 ZIP、儿童档案与 token 刷新接口。
-`crawl/动画/video_list.md` 虽名为视频目录，但接口是 PDF 目录，完整性需要与 App 集数实际比对。
-已用现有抓包会话完成只读联调：登录状态有效；三类分类及第 1/2 页列表正常，页码递增有效；
-动画 44 的季集目录和 5294 的播放地址正常。未发送短信，短信登录流程由合成响应测试验证。
 
 ## 验证
 
@@ -127,4 +121,4 @@ uv build
 - 电影 116 的详情和播放接口实测通过，返回完整 SD M3U8、字幕和中英文 PDF 地址。
 - 电影 116 的 SRT、中英文 PDF 和封面已实际下载并校验文件格式。
 - 本机代理环境使用系统 CA 完成严格 TLS 校验；未关闭证书验证。
-- wheel 与源码包构建通过，打包内容不含原始抓包和下载文件。
+- wheel 与源码包构建通过，打包内容不含下载文件。
