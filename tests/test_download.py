@@ -126,14 +126,21 @@ def test_encrypted_hls_merge_and_resume(tmp_path, server):
 1.ts
 #EXT-X-ENDLIST
 """
-    target = tmp_path / "result.mp4"
+    target = tmp_path / "The Ants Go Marching #2.mp4"
     with pytest.raises(MediaError):
         hls(base + "/list.m3u8?auth_key=first", target, jobs=1)
     assert not target.exists()
-    assert (tmp_path / ".result.mp4.hls" / "000000.ts").exists()
+    work_dirs = list(tmp_path.glob(".littleuqu-hls-*"))
+    assert len(work_dirs) == 1
+    assert "#" not in work_dirs[0].name
+    assert (work_dirs[0] / "000000.ts").exists()
+    # 0.3.1 and earlier used the output filename directly. Preserve that cache
+    # across the safe-directory migration so a retry does not redownload it.
+    legacy_work = tmp_path / f".{target.name}.hls"
+    work_dirs[0].replace(legacy_work)
     payloads["/1.ts"] = encrypted_second
     assert hls(base + "/list.m3u8?auth_key=second", target, jobs=1) == "downloaded"
     assert target.stat().st_size > 0
     assert sum(path == "/0.ts" for path, _ in seen) == 1
     assert hls(base + "/list.m3u8", target) == "skipped"
-    assert not (tmp_path / ".result.mp4.hls").exists()
+    assert not work_dirs[0].exists()

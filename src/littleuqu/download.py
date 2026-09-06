@@ -67,6 +67,13 @@ def mark_done(path):
     write_json(Path(str(path) + ".done.json"), {"size": path.stat().st_size})
 
 
+def _hls_work_dir(path: Path) -> Path:
+    # FFmpeg parses '#' and '?' in local input paths as URL delimiters. Keep the
+    # work directory ASCII-only while retaining a stable cache per output file.
+    digest = hashlib.sha256(path.name.encode()).hexdigest()[:16]
+    return path.parent / f".littleuqu-hls-{digest}"
+
+
 def direct(url: str, path: Path, overwrite=False):
     if completed(path) and not overwrite:
         return "skipped"
@@ -163,7 +170,10 @@ def hls(url: str, path: Path, jobs=4, overwrite=False, progress=None):
         for s in playlist.segments
     ]
     signature = hashlib.sha256(repr((playlist.media_sequence, manifest)).encode()).hexdigest()
-    work = path.parent / ("." + path.name + ".hls")
+    work = _hls_work_dir(path)
+    legacy_work = path.parent / ("." + path.name + ".hls")
+    if legacy_work.exists() and not work.exists():
+        legacy_work.replace(work)
     if work.exists() and (
         overwrite or read_json(work / "state.json").get("signature") != signature
     ):
