@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -12,8 +13,8 @@ from rich.table import Table
 from . import __version__
 from .api import API
 from .catalog import KINDS, Catalog, item_id, kind_name, playback_urls, title
-from .config import UquError, config_dir, safe_name, scrub, write_json
-from .download import MediaError, completed, direct, extract_audio, media, require_ffmpeg
+from .config import UquError, config_dir, read_json, safe_name, scrub, write_json
+from .download import MediaError, completed, direct, extract_audio, media
 
 app = typer.Typer(help="小小优趣：登录、分类查询与媒体下载", no_args_is_help=True)
 auth = typer.Typer(help="管理登录会话", no_args_is_help=True)
@@ -259,6 +260,55 @@ def _asset(result, label, url, path, overwrite):
     result["assets"].append({"type": label, "path": str(path), "status": status})
 
 
+def _file_assets(job, data, folder, stem):
+    detail = job.get("detail") or job.get("movieDetail") or {}
+    subtitle_url = data.get("subtitleUrl") or job.get("subtitleUrl") or detail.get("subtitleUrl")
+    suffix = Path(urlsplit(subtitle_url).path).suffix.lower() if subtitle_url else ".srt"
+    if suffix not in (".srt", ".lrc", ".vtt"):
+        suffix = ".srt"
+    assets = [("subtitle", subtitle_url, folder / f"{stem}{suffix}")]
+    cover_url = (
+        job.get("dmCvUrl")
+        or job.get("coverUrl")
+        or job.get("img")
+        or job.get("roundCoverUrl")
+        or job.get("audioCoverUrl")
+        or detail.get("coverUrl")
+        or detail.get("headImg")
+    )
+    if cover_url:
+        suffix = Path(urlsplit(cover_url).path).suffix.lower()
+        suffix = suffix if suffix in (".png", ".jpg", ".jpeg", ".webp") else ".jpg"
+        assets.append(("cover", cover_url, folder / f"cover{suffix}"))
+    assets.extend(
+        [
+            ("subtitle_pdf", detail.get("subtitlePdfUrl"), folder / f"{safe_name(job['name'])}_字幕.pdf"),
+            ("subtitle_pdf_en", detail.get("subtitlePdfEnUrl"), folder / f"{safe_name(job['name'])}_英文字幕.pdf"),
+        ]
+    )
+    return [(label, url, path) for label, url, path in assets if url]
+
+
+def _cached_files(job, folder, stem):
+    # Existing metadata is enough to check local files, but its scrubbed or
+    # expired URLs must never be used to download missing attachments.
+    try:
+        saved = read_json(folder / f"{stem}.json")
+        if (
+            not isinstance(saved, dict)
+            or saved.get("item") != scrub(job)
+            or not isinstance(saved.get("playback"), dict)
+        ):
+            return None
+        data = saved["playback"]
+        if all(completed(path) for _, _, path in _file_assets(job, data, folder, stem)):
+            return data
+    except UquError:
+        # A damaged optional cache is refreshed through the normal API path.
+        pass
+    return None
+
+
 def content_download(cat, job, output, selected, quality, lang, jobs, overwrite):
     folder, stem = _paths(job, output, quality, lang)
     direct_audio = job["kind"] == "熏听" and job.get("rssType") == "LISTEN_AD"
@@ -271,10 +321,10 @@ def content_download(cat, job, output, selected, quality, lang, jobs, overwrite)
     )
     result = {**job, "assets": [], "warnings": []}
     data = None
-    need_playback = "video" in selected or "audio" in selected
+    audio_done = "audio" in selected and not overwrite and completed(audio)
+    need_playback = "video" in selected or ("audio" in selected and not audio_done)
     if need_playback:
         if completed(source) and not overwrite:
-            data = _play(cat, job, quality, lang)
             result["assets"].append({"type": "source", "path": str(source), "status": "skipped"})
         else:
             data, status = _download_playback(cat, job, source, quality, lang, jobs, overwrite)
@@ -284,52 +334,21 @@ def content_download(cat, job, output, selected, quality, lang, jobs, overwrite)
             result["assets"].append({"type": "audio", "path": str(audio), "status": status})
         elif "audio" in selected:
             result["assets"][-1]["type"] = "audio"
+    elif audio_done:
+        result["assets"].append({"type": "audio", "path": str(audio), "status": "skipped"})
     if "files" in selected:
-        data = data or _play(cat, job, quality, lang)
+        cached = _cached_files(job, folder, stem) if not overwrite and data is None else None
+        if cached is not None:
+            data = cached
+            for label, _, path in _file_assets(job, data, folder, stem):
+                result["assets"].append({"type": label, "path": str(path), "status": "skipped"})
+        else:
+            if data is None:
+                data = _play(cat, job, quality, lang)
+            for label, url, path in _file_assets(job, data, folder, stem):
+                _asset(result, label, url, path, overwrite)
+            write_json(folder / f"{stem}.json", scrub({"item": job, "playback": data}))
         detail = job.get("detail") or job.get("movieDetail") or {}
-        subtitle_url = (
-            data.get("subtitleUrl") or job.get("subtitleUrl") or detail.get("subtitleUrl")
-        )
-        subtitle_suffix = (
-            Path(urlsplit(subtitle_url).path).suffix.lower() if subtitle_url else ".srt"
-        )
-        if subtitle_suffix not in (".srt", ".lrc", ".vtt"):
-            subtitle_suffix = ".srt"
-        _asset(
-            result,
-            "subtitle",
-            subtitle_url,
-            folder / f"{stem}{subtitle_suffix}",
-            overwrite,
-        )
-        cover_url = (
-            job.get("dmCvUrl")
-            or job.get("coverUrl")
-            or job.get("img")
-            or job.get("roundCoverUrl")
-            or job.get("audioCoverUrl")
-            or detail.get("coverUrl")
-            or detail.get("headImg")
-        )
-        if cover_url:
-            suffix = Path(urlsplit(cover_url).path).suffix.lower()
-            suffix = suffix if suffix in (".png", ".jpg", ".jpeg", ".webp") else ".jpg"
-            _asset(result, "cover", cover_url, folder / f"cover{suffix}", overwrite)
-        _asset(
-            result,
-            "subtitle_pdf",
-            detail.get("subtitlePdfUrl"),
-            folder / f"{safe_name(job['name'])}_字幕.pdf",
-            overwrite,
-        )
-        _asset(
-            result,
-            "subtitle_pdf_en",
-            detail.get("subtitlePdfEnUrl"),
-            folder / f"{safe_name(job['name'])}_英文字幕.pdf",
-            overwrite,
-        )
-        write_json(folder / f"{stem}.json", scrub({"item": job, "playback": data}))
         has_pdf = (
             data.get("pdfDownload") == 1
             or (data.get("pdfSize") or 0) > 0
@@ -474,13 +493,10 @@ def download(
     if dry_run:
         emit(plan)
         return
-    if any(j["status"] == "pending" for j in plan) and (
-        explicit_media is None or {"video", "audio"} & explicit_media
-    ):
-        require_ffmpeg()
     output = output.resolve()
     report_path = output / "download-report.json"
     write_json(report_path, plan)
+    last_report = time.monotonic()
     for i, job in enumerate(plan):
         console.print(f"[{i + 1}/{len(plan)}] {job['name']}", markup=False)
         try:
@@ -505,7 +521,10 @@ def download(
         except (UquError, OSError) as exc:
             plan[i] = {**job, "status": "failed", "reason": str(exc)}
             console.print(f"[red]下载失败：{exc}[/red]")
-        write_json(report_path, plan)
+        now = time.monotonic()
+        if now - last_report >= 1 or i == len(plan) - 1:
+            write_json(report_path, plan)
+            last_report = now
     counts = {s: sum(x["status"] == s for x in plan) for s in ("complete", "partial", "failed")}
     console.print(f"结果：{counts}\n报告：{report_path}")
     if counts["failed"] or counts["partial"]:
