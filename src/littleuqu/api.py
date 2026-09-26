@@ -13,6 +13,11 @@ from urllib3.util.retry import Retry
 
 from .config import UquError, ca_bundle, config_dir, read_json, write_json
 
+
+class AuthError(UquError):
+    """登录态已过期或被服务端拒绝，批量任务应据此中止而非逐个失败。"""
+
+
 BASE = "https://fastapi.ukids.cn"
 DEFAULT_HEADERS = {
     "format": "JSON",
@@ -82,11 +87,21 @@ class API:
         self.state["headers"] = {k: v for k, v in self.headers.items() if k != "token"}
         write_json(self.path, self.state, private=True)
 
+    def expired(self, skew=300):
+        """本地会话是否已超过 token 有效期（含安全余量），无有效期记录时返回 False。"""
+        expires, login_at = self.state.get("expires"), self.state.get("login_at")
+        if not isinstance(expires, (int, float)) or not isinstance(login_at, (int, float)):
+            return False
+        return time.time() >= login_at + expires - skew
+
     def request(self, path: str, params=None, body=None, require_auth=True):
         if not path.startswith("/") or path.startswith("//"):
             raise UquError("API 路径必须是本站相对路径")
         if require_auth and not self.headers.get("token"):
             raise UquError("尚未登录，请运行 littleuqu login 或 auth import-capture")
+        if require_auth and self.expired():
+            hours = self.state.get("expires", 0) / 3600
+            raise AuthError(f"登录已超过 token 有效期（约 {hours:.0f} 小时），请重新运行 littleuqu login")
         headers = {**self.headers, "req-id": uuid.uuid4().hex.upper()}
         if not require_auth:
             headers.pop("token", None)
@@ -99,8 +114,13 @@ class API:
                 headers=headers,
                 timeout=(15, 60),
             )
-            if response.status_code in (401, 403):
-                raise UquError("登录已失效或当前账号无权访问，请检查 auth status / 重新登录")
+            if response.status_code == 401:
+                raise AuthError("登录已失效（HTTP 401），请重新运行 littleuqu login 登录")
+            if response.status_code == 403:
+                raise UquError(
+                    "当前账号无权访问该资源（HTTP 403），请检查 VIP 状态；"
+                    "若该账号应有权限，可能是登录失效，请重新登录"
+                )
             response.raise_for_status()
             data = response.json()
         except (requests.RequestException, ValueError) as exc:
@@ -128,6 +148,7 @@ class API:
 
     def import_capture(self, path: Path):
         headers = capture_headers(path)
+        token_info = {}
         if not headers.get("token"):
             # 支持导入登录响应；json 从 response 标记之后读取。
             text = path.read_text(encoding="utf-8")
@@ -137,8 +158,17 @@ class API:
                 obj = data.get("data", {}).get("token", {})
                 if isinstance(obj, dict) and obj.get("token"):
                     headers["token"] = obj["token"]
+                    token_info = {
+                        "refresh_token": obj.get("refreshToken"),
+                        "expires": obj.get("expires"),
+                        "login_at": time.time(),
+                    }
             if not headers.get("token"):
                 raise UquError("抓包中未找到 token，请选择已登录请求或登录响应")
         self.headers.update(headers)
         self.state["token"] = headers["token"]
+        # 旧会话的有效期信息不适用于新 token：缺失时宁可不预检，也不能误判过期。
+        for key in ("refresh_token", "expires", "login_at"):
+            self.state.pop(key, None)
+        self.state.update({k: v for k, v in token_info.items() if v is not None})
         self.save()

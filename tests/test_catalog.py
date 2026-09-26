@@ -1,12 +1,13 @@
 import base64
+import time
 
 import pytest
 from typer.testing import CliRunner
 
-from littleuqu.api import API, capture_headers
+from littleuqu.api import API, AuthError, capture_headers
 from littleuqu.catalog import Catalog, decode_url, playback_urls
 from littleuqu.cli import app
-from littleuqu.config import UquError, scrub
+from littleuqu.config import UquError, config_dir, read_json, scrub, write_json
 
 
 class FakeAPI:
@@ -176,3 +177,82 @@ def test_login_payload_and_saved_token(tmp_path, monkeypatch):
     assert called[0][1]["body"] == {"mobile": "10000000000", "verifyCode": "1234"}
     assert API().headers["token"] == "test-secret"
     assert "1234" not in api.path.read_text()
+
+
+class FakeResponse:
+    def __init__(self, status=200):
+        self.status_code = status
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return {"success": True, "data": {}}
+
+
+def session_with(tmp_path, monkeypatch, status=200, **state):
+    """构造带指定会话状态和固定 HTTP 状态码的 API，返回 (api, 已请求 URL 列表)。"""
+    monkeypatch.setenv("LITTLEUQU_CONFIG_DIR", str(tmp_path))
+    write_json(tmp_path / "session.json", {"token": "t", **state})
+    api = API()
+    calls = []
+
+    def fake_request(method, url, **kwargs):
+        calls.append(url)
+        return FakeResponse(status)
+
+    monkeypatch.setattr(api.session, "request", fake_request)
+    return api, calls
+
+
+def test_expired_session_rejected_before_request(tmp_path, monkeypatch):
+    api, calls = session_with(
+        tmp_path, monkeypatch, expires=18000, login_at=time.time() - 18001
+    )
+    with pytest.raises(AuthError, match="有效期"):
+        api.request("/ucapp/getUser")
+    assert calls == []
+
+
+def test_fresh_session_passes_precheck(tmp_path, monkeypatch):
+    api, calls = session_with(tmp_path, monkeypatch, expires=18000, login_at=time.time())
+    assert api.request("/ucapp/getUser") == {"success": True, "data": {}}
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_status_codes_are_distinguished(tmp_path, monkeypatch, status):
+    api, _ = session_with(tmp_path, monkeypatch, status=status)
+    with pytest.raises(UquError) as info:
+        api.request("/coreapp/play/video/V9/online")
+    assert isinstance(info.value, AuthError) == (status == 401)
+    assert f"HTTP {status}" in str(info.value)
+
+
+def test_import_capture_clears_stale_expiry(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITTLEUQU_CONFIG_DIR", str(tmp_path / "config"))
+    api = API()
+    api.state.update(token="old", expires=18000, login_at=time.time() - 99999)
+    capture = tmp_path / "sample.md"
+    capture.write_text('curl -H "token: fresh" "https://fastapi.ukids.cn/x"')
+    api.import_capture(capture)
+    state = read_json(api.path)
+    assert state["token"] == "fresh"
+    assert "expires" not in state and "login_at" not in state
+    # 新 token 不应被旧会话的过期记录误判。
+    assert API().expired() is False
+
+
+def test_import_login_response_records_expiry(tmp_path, monkeypatch):
+    monkeypatch.setenv("LITTLEUQU_CONFIG_DIR", str(tmp_path / "config"))
+    capture = tmp_path / "login.md"
+    capture.write_text(
+        'curl "https://fastapi.ukids.cn/ucapp/mobileLogin"\n\n'
+        '{"success": true, "data": {"token":'
+        ' {"token": "tk", "refreshToken": "rt", "expires": 18000}}}'
+    )
+    API().import_capture(capture)
+    state = read_json(config_dir() / "session.json")
+    assert state["expires"] == 18000
+    assert state["refresh_token"] == "rt"
+    assert API().expired() is False

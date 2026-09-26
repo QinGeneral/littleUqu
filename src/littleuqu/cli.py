@@ -11,7 +11,7 @@ from rich.progress import Progress
 from rich.table import Table
 
 from . import __version__
-from .api import API
+from .api import API, AuthError
 from .catalog import KINDS, Catalog, item_id, kind_name, playback_urls, title
 from .config import UquError, config_dir, read_json, safe_name, scrub, write_json
 from .download import MediaError, completed, direct, extract_audio, media
@@ -518,6 +518,18 @@ def download(
             plan[i] = content_download(
                 cat, job, output, selected, job_quality, job_lang, jobs, overwrite
             )
+        except AuthError as exc:
+            # 鉴权失效对后续每一项都会重演，快速中止而非逐个失败。
+            plan[i] = {**job, "status": "failed", "reason": str(exc)}
+            for rest in range(i + 1, len(plan)):
+                plan[rest] = {**plan[rest], "status": "skipped", "reason": str(exc)}
+            write_json(report_path, plan)
+            console.print(f"[red]登录已失效，中止批量下载：{exc}[/red]")
+            if len(plan) - i - 1:
+                console.print(
+                    f"[yellow]后续 {len(plan) - i - 1} 项已跳过；重新登录后重跑同一命令即可续传[/yellow]"
+                )
+            break
         except (UquError, OSError) as exc:
             plan[i] = {**job, "status": "failed", "reason": str(exc)}
             console.print(f"[red]下载失败：{exc}[/red]")
@@ -525,7 +537,10 @@ def download(
         if now - last_report >= 1 or i == len(plan) - 1:
             write_json(report_path, plan)
             last_report = now
-    counts = {s: sum(x["status"] == s for x in plan) for s in ("complete", "partial", "failed")}
+    counts = {
+        s: sum(x["status"] == s for x in plan)
+        for s in ("complete", "partial", "failed", "skipped")
+    }
     console.print(f"结果：{counts}\n报告：{report_path}")
     if counts["failed"] or counts["partial"]:
         raise typer.Exit(2)

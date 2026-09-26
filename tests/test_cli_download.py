@@ -4,6 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from littleuqu import cli
+from littleuqu.api import AuthError
 from littleuqu.config import read_json, scrub, write_json
 from littleuqu.download import mark_done
 
@@ -193,6 +194,36 @@ def test_damaged_video_or_overwrite_downloads(tmp_path, job, monkeypatch, overwr
     result = cli.content_download(None, job, tmp_path, {"video"}, "SD", -1, 4, overwrite)
     assert calls == [overwrite]
     assert result["assets"][0]["status"] == "downloaded"
+
+
+def test_auth_failure_aborts_remaining_jobs(tmp_path, job, monkeypatch):
+    class Catalog:
+        def animation(self, rid):
+            return {"name": job["ip_name"], "seasonList": [{
+                "seasonId": job["season_id"], "seasonName": job["season_name"],
+                "dramaVOList": [{"id": i, "name": f"第{i}集"} for i in range(1, 4)],
+            }]}
+
+    attempted = []
+
+    def download(cat, j, target, quality, lang, jobs, overwrite):
+        attempted.append(j["id"])
+        if j["id"] == 2:
+            raise AuthError("登录已失效（HTTP 401），请重新运行 littleuqu login 登录")
+        finish(target)
+        return {}, "downloaded"
+
+    monkeypatch.setattr(cli, "Catalog", lambda api: Catalog())
+    monkeypatch.setattr(cli, "API", lambda: None)
+    monkeypatch.setattr(cli, "_download_playback", download)
+    result = CliRunner().invoke(cli.app, [
+        "download", "动画", "44", "--media", "video", "--output", str(tmp_path),
+    ])
+    # 第 2 集鉴权失败后必须中止：第 3 集不再请求播放接口。
+    assert attempted == [1, 2]
+    assert result.exit_code == 2, result.output
+    report = read_json(tmp_path / "download-report.json")
+    assert [item["status"] for item in report] == ["complete", "failed", "skipped"]
 
 
 def test_completed_batch_without_ffmpeg_and_batched_report(tmp_path, job, no_network, monkeypatch):
