@@ -180,14 +180,15 @@ def test_login_payload_and_saved_token(tmp_path, monkeypatch):
 
 
 class FakeResponse:
-    def __init__(self, status=200):
+    def __init__(self, status=200, payload=None):
         self.status_code = status
+        self._payload = payload
 
     def raise_for_status(self):
         pass
 
     def json(self):
-        return {"success": True, "data": {}}
+        return self._payload if self._payload is not None else {"success": True, "data": {}}
 
 
 def session_with(tmp_path, monkeypatch, status=200, **state):
@@ -200,6 +201,22 @@ def session_with(tmp_path, monkeypatch, status=200, **state):
     def fake_request(method, url, **kwargs):
         calls.append(url)
         return FakeResponse(status)
+
+    monkeypatch.setattr(api.session, "request", fake_request)
+    return api, calls
+
+
+def session_seq(tmp_path, monkeypatch, responses, **state):
+    """按序返回给定响应的 API，返回 (api, 调用记录[(method, url, body)])。"""
+    monkeypatch.setenv("LITTLEUQU_CONFIG_DIR", str(tmp_path))
+    write_json(tmp_path / "session.json", {"token": "old", **state})
+    api = API()
+    calls = []
+    seq = iter(responses)
+
+    def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs.get("json")))
+        return next(seq)
 
     monkeypatch.setattr(api.session, "request", fake_request)
     return api, calls
@@ -256,3 +273,53 @@ def test_import_login_response_records_expiry(tmp_path, monkeypatch):
     assert state["expires"] == 18000
     assert state["refresh_token"] == "rt"
     assert API().expired() is False
+
+
+REFRESH_BODY = {
+    "success": True,
+    "data": {"token": "new-token", "expires": 18000, "refreshToken": "rt"},
+}
+EXPIRED = {"expires": 18000, "login_at": time.time() - 99999}
+
+
+def test_refresh_updates_session(tmp_path, monkeypatch):
+    api, calls = session_seq(
+        tmp_path, monkeypatch, [FakeResponse(200, REFRESH_BODY)], refresh_token="rt", **EXPIRED
+    )
+    assert api.expired() is True
+    assert api.refresh() is True
+    assert api.headers["token"] == "new-token"
+    assert read_json(api.path)["token"] == "new-token"
+    assert api.expired() is False
+    assert calls[0][1].endswith("/ucapp/refreshToken")
+    assert calls[0][2] == {"refreshToken": "rt"}
+
+
+def test_request_auto_refreshes_when_expired(tmp_path, monkeypatch):
+    api, calls = session_seq(
+        tmp_path,
+        monkeypatch,
+        [FakeResponse(200, REFRESH_BODY), FakeResponse(200, {"success": True, "data": {"ok": 1}})],
+        refresh_token="rt",
+        **EXPIRED,
+    )
+    assert api.request("/ucapp/getUser")["data"] == {"ok": 1}
+    assert [url.split("/ucapp/")[-1] for _, url, _ in calls] == ["refreshToken", "getUser"]
+    assert api.headers["token"] == "new-token"
+
+
+def test_request_raises_when_auto_refresh_fails(tmp_path, monkeypatch):
+    api, calls = session_seq(
+        tmp_path, monkeypatch, [FakeResponse(401)], refresh_token="rt", **EXPIRED
+    )
+    with pytest.raises(AuthError, match="自动续期失败"):
+        api.request("/ucapp/getUser")
+    assert len(calls) == 1  # 续期被拒后中止，不再发起原请求
+
+
+def test_refresh_without_refresh_token(tmp_path, monkeypatch):
+    api, calls = session_seq(tmp_path, monkeypatch, [], **EXPIRED)
+    assert api.refresh() is False
+    with pytest.raises(AuthError, match="自动续期失败"):
+        api.request("/ucapp/getUser")
+    assert calls == []  # 无 refresh_token 时不触网

@@ -94,14 +94,44 @@ class API:
             return False
         return time.time() >= login_at + expires - skew
 
-    def request(self, path: str, params=None, body=None, require_auth=True):
+    def refresh(self):
+        """用 refresh_token 换取新 token；成功则更新并保存会话，返回 True。"""
+        refresh_token = self.state.get("refresh_token")
+        if not refresh_token or not self.headers.get("token"):
+            return False
+        try:
+            data = self.request(
+                "/ucapp/refreshToken",
+                body={"refreshToken": refresh_token},
+                _auto_refresh=False,
+            )["data"]
+        except UquError:
+            return False
+        # 刷新响应是扁平结构：data.token 为字符串，与登录响应的嵌套结构不同。
+        new_token = data.get("token") if isinstance(data, dict) else None
+        if not isinstance(new_token, str) or not new_token:
+            return False
+        self.state.update(
+            token=new_token,
+            refresh_token=data.get("refreshToken") or refresh_token,
+            expires=data.get("expires"),
+            login_at=time.time(),
+        )
+        self.headers["token"] = new_token
+        self.save()
+        return True
+
+    def request(self, path, params=None, body=None, require_auth=True, _auto_refresh=True):
         if not path.startswith("/") or path.startswith("//"):
             raise UquError("API 路径必须是本站相对路径")
         if require_auth and not self.headers.get("token"):
             raise UquError("尚未登录，请运行 littleuqu login 或 auth import-capture")
-        if require_auth and self.expired():
-            hours = self.state.get("expires", 0) / 3600
-            raise AuthError(f"登录已超过 token 有效期（约 {hours:.0f} 小时），请重新运行 littleuqu login")
+        if require_auth and _auto_refresh and self.expired() and not self.refresh():
+            hours = (self.state.get("expires") or 0) / 3600
+            raise AuthError(
+                f"登录已超过 token 有效期（约 {hours:.0f} 小时）且自动续期失败，"
+                "请重新运行 littleuqu login"
+            )
         headers = {**self.headers, "req-id": uuid.uuid4().hex.upper()}
         if not require_auth:
             headers.pop("token", None)
